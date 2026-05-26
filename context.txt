@@ -1,0 +1,29 @@
+Assignment 39 - Compile-Time Stack Usage Analyzer
+Description: An LLVM analysis pass that statically estimates maximum stack usage for each
+function including its call chain, identifying call paths that risk stack overflow — critical for
+embedded, kernel, and RTOS development where stack sizes are fixed and small.
+
+Background: GCC has -fstack-usage (per-function, no call chain). Clang has -Wframe-
+larger-than (per-frame, no call chain). Neither tells you "main→A→B→C uses 48KB of
+
+stack total," which is what embedded developers actually need. No compiler provides call-
+chain-aware stack analysis. Developers use manual tools or custom scripts that are fragile and
+
+miss dynamic dispatch. An LLVM-native solution can leverage the compiler's call graph,
+inlining decisions, and alloca analysis for accurate estimates. In embedded/RTOS
+development, stack overflow is the #1 cause of mysterious crashes. RTOS tasks typically
+have 1-8KB stacks, and a single unexpected deep call chain silently corrupts adjacent
+memory.
+Objective: Build a whole-program analysis that computes per-function stack frames,
+constructs the static call graph, and reports worst-case stack depth for each entry point,
+flagging paths exceeding a configurable threshold.
+Deliverables:
+1. Per-function stack frame estimator (alloca, spills, alignment padding) operating on
+MachineFunction
+2. Call graph traversal computing worst-case cumulative stack depth per entry point
+3. Handling of recursion (detect and warn), indirect calls (configurable upper bound),
+and inlining effects
+
+4. CLI tool reporting top-N deepest call chains with per-function breakdown
+5. Evaluation on an embedded RTOS codebase (e.g., Zephyr, FreeRTOS) comparing
+estimates against measured stack usage

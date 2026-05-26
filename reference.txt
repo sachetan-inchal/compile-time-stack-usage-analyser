@@ -1,0 +1,65 @@
+5. Implementation Plan (Step-by-Step)
+Step 1 — Setup LLVM Pass
+Use New Pass Manager
+Create:
+FunctionPass (for frame estimation)
+ModulePass (for call graph + aggregation)
+
+Step 2 — Extract Stack Frame Size
+From MachineFunction:
+MachineFrameInfo:
+getStackSize()
+getObjectSize(i)
+getMaxAlignment()
+This already includes:
+allocas
+spills
+padding
+
+Step 3 — Build Call Graph
+Iterate over CallBase in IR
+Map:
+
+ Function → vector<Function*>
+
+
+
+Step 4 — SCC Detection
+Use:
+LLVM’s scc_iterator
+ OR
+Implement Tarjan manually
+
+Step 5 — Stack Propagation
+Memoization + DFS
+Or DP on DAG
+
+Step 6 — Path Reconstruction
+To print call chains:
+Store:
+
+ best_child[F] = argmax callee
+
+
+Reconstruct path recursively
+
+6. Evaluation Strategy
+Use:
+FreeRTOS
+Zephyr
+Steps:
+Compile with:
+
+ -fno-inline (for baseline)
+-O2 (for realistic)
+
+
+Compare with:
+Runtime watermarking:
+
+ uxTaskGetStackHighWaterMark()
+
+
+Show:
+Static vs actual usage
+Error %
