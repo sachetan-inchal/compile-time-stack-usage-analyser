@@ -1,0 +1,33 @@
+# CMake build directories
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+/Makefile
+/cmake_install.cmake
+
+# Python virtual environment
+/.venv/
+/venv/
+ENV/
+
+# Python cache files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Analyzer test and extraction outputs
+/test_results/
+/test/*.ll
+/test/*.o
+/test/*.su
+
+# IDE folders
+/.vscode/
+/.idea/
+*.swp
+*.swo
+
+# Local system files
+.DS_Store
+Thumbs.db
