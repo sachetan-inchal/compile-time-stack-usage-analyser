@@ -31,3 +31,7 @@ ENV/
 # Local system files
 .DS_Store
 Thumbs.db
+
+# Large generated codebase export
+/codebase.txt
+

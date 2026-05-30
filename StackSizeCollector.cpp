@@ -141,13 +141,25 @@ int main(int argc, char **argv) {
     }
 
     // ---- Initialize LLVM targets -----------------------------------------
-    // Initialize all targets so the tool can cross-compile analysis
-    // (e.g., analyze ARM firmware on an x86_64 host).
-    InitializeAllTargetInfos();
-    InitializeAllTargets();
-    InitializeAllTargetMCs();
-    InitializeAllAsmPrinters();
-    InitializeAllAsmParsers();
+    // Explicitly initialize the supported architectures to avoid link errors
+    // with unlinked backends (e.g. WebAssembly, SystemZ).
+    LLVMInitializeX86TargetInfo();
+    LLVMInitializeX86Target();
+    LLVMInitializeX86TargetMC();
+    LLVMInitializeX86AsmPrinter();
+    LLVMInitializeX86AsmParser();
+
+    LLVMInitializeARMTargetInfo();
+    LLVMInitializeARMTarget();
+    LLVMInitializeARMTargetMC();
+    LLVMInitializeARMAsmPrinter();
+    LLVMInitializeARMAsmParser();
+
+    LLVMInitializeAArch64TargetInfo();
+    LLVMInitializeAArch64Target();
+    LLVMInitializeAArch64TargetMC();
+    LLVMInitializeAArch64AsmPrinter();
+    LLVMInitializeAArch64AsmParser();
 
     // ---- Load LLVM IR file -----------------------------------------------
     LLVMContext Context;
@@ -162,14 +174,14 @@ int main(int argc, char **argv) {
     if (targetTriple.empty()) {
         // Default: use the module's embedded triple if present,
         // otherwise fall back to the host machine triple.
-        targetTriple = Mod->getTargetTriple();
+        targetTriple = Mod->getTargetTriple().str();
         if (targetTriple.empty()) {
             targetTriple = sys::getDefaultTargetTriple();
             std::cerr << "[info] No target triple in IR, using host: "
                       << targetTriple << "\n";
         }
     }
-    Mod->setTargetTriple(targetTriple);
+    Mod->setTargetTriple(Triple(targetTriple));
 
     // ---- Look up the target ----------------------------------------------
     std::string errorMsg;
@@ -210,7 +222,7 @@ int main(int argc, char **argv) {
     legacy::PassManager PM;
 
     // TargetLibraryInfo is required by several codegen passes
-    TargetLibraryInfoImpl TLII(Triple(targetTriple));
+    TargetLibraryInfoImpl TLII{Triple(targetTriple)};
     PM.add(new TargetLibraryInfoWrapperPass(TLII));
 
     // Add the full codegen pipeline (instruction selection, RA, frame layout,
