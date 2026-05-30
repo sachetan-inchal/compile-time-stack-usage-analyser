@@ -125,27 +125,192 @@ def reconstruct_path(node, memo):
             break
     return path
 
+def parse_task_allocs(task_allocs_str):
+    """
+    Parse a comma-separated list of task=bytes pairs.
+    e.g. "vSensorTask=1024,vCommsTask=512,vControlTask=2048"
+    Returns a dict: { task_name: stack_bytes }
+    """
+    result = {}
+    if not task_allocs_str:
+        return result
+    for pair in task_allocs_str.split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            name, _, val = pair.partition("=")
+            try:
+                result[name.strip()] = int(val.strip())
+            except ValueError:
+                pass
+    return result
+
+def print_rtos_report(entry_points, memo, sizes, recursion_flags,
+                       task_allocs, default_alloc, console):
+    """
+    Print an RTOS task safety report:
+      TaskName
+        Frame size (own):    N bytes
+        Worst-case depth:    N bytes
+        Stack allocation:    N bytes
+        Safety margin:       N bytes
+        Status:              SAFE ✅ / ⚠️ OVERFLOW RISK / ♾ RECURSIVE
+    """
+    if RICH_AVAILABLE:
+        console.print()
+        console.print(Panel(
+            "[bold white]RTOS Task Stack Safety Report[/bold white]\n"
+            "[dim]Compares static worst-case depth against configured task stack allocations[/dim]",
+            title="[bold magenta]▲ RTOS REPORT[/bold magenta]",
+            border_style="magenta"
+        ))
+
+        table = Table(show_header=True, header_style="bold white",
+                      border_style="dim white", padding=(0, 1))
+        table.add_column("Task / Entry Point",      style="cyan bold",    min_width=22)
+        table.add_column("Own Frame",               justify="right",      style="blue",     min_width=10)
+        table.add_column("Worst-Case Depth",        justify="right",                        min_width=16)
+        table.add_column("Stack Allocation",        justify="right",      style="yellow",   min_width=16)
+        table.add_column("Safety Margin",           justify="right",                        min_width=14)
+        table.add_column("Status",                  justify="center",                       min_width=18)
+
+        for entry in sorted(entry_points, key=lambda x: memo.get(x, (0,))[0], reverse=True):
+            if entry not in memo:
+                continue
+            depth, _ = memo[entry]
+            own = sizes.get(entry, 0)
+            alloc = task_allocs.get(entry, default_alloc)
+            margin = alloc - depth
+            is_recursive = recursion_flags.get(entry, False)
+
+            if is_recursive:
+                status     = "[bold yellow]♾  RECURSIVE[/bold yellow]"
+                margin_str = "[yellow]N/A[/yellow]"
+                depth_str  = f"[yellow]{depth} B[/yellow]"
+            elif margin < 0:
+                status     = "[blink bold red]⚠  OVERFLOW RISK[/blink bold red]"
+                margin_str = f"[bold red]{margin} B[/bold red]"
+                depth_str  = f"[bold red]{depth} B[/bold red]"
+            elif margin < alloc * 0.2:          # < 20% headroom
+                status     = "[yellow]⚡  LOW MARGIN[/yellow]"
+                margin_str = f"[yellow]{margin} B[/yellow]"
+                depth_str  = f"[yellow]{depth} B[/yellow]"
+            else:
+                status     = "[bold green]✅  SAFE[/bold green]"
+                margin_str = f"[green]{margin} B[/green]"
+                depth_str  = f"[green]{depth} B[/green]"
+
+            table.add_row(
+                entry,
+                f"{own} B",
+                depth_str,
+                f"{alloc} B",
+                margin_str,
+                status,
+            )
+
+        console.print(table)
+        console.print()
+
+    else:
+        print("\n========== RTOS TASK STACK SAFETY REPORT ==========")
+        for entry in sorted(entry_points, key=lambda x: memo.get(x, (0,))[0], reverse=True):
+            if entry not in memo:
+                continue
+            depth, _ = memo[entry]
+            own = sizes.get(entry, 0)
+            alloc = task_allocs.get(entry, default_alloc)
+            margin = alloc - depth
+            is_recursive = recursion_flags.get(entry, False)
+
+            print(f"\n  {entry}")
+            print(f"    Own frame size:    {own} bytes")
+            print(f"    Worst-case depth:  {depth} bytes")
+            print(f"    Stack allocation:  {alloc} bytes")
+            if is_recursive:
+                print(f"    Status:            ♾  RECURSIVE (unbounded depth — allocate conservatively)")
+            elif margin < 0:
+                print(f"    Safety margin:     {margin} bytes")
+                print(f"    Status:            ⚠  OVERFLOW RISK")
+            else:
+                print(f"    Safety margin:     {margin} bytes")
+                print(f"    Status:            ✅ SAFE")
+        print("=" * 51)
+
 def main():
-    parser = argparse.ArgumentParser(description="Static Compile-Time Stack Usage Graph Propagation Solver")
-    parser.add_argument("--sizes", default="stack_sizes.json", help="Path to stack_sizes.json")
-    parser.add_argument("--cg", default="call_graph.json", help="Path to call_graph.json")
-    parser.add_argument("--indirect-cost", type=int, default=256, help="Configurable upper bound stack cost for indirect calls (bytes)")
-    parser.add_argument("--threshold", type=int, default=1024, help="Highlight depth exceeding this threshold (bytes)")
-    parser.add_argument("--top-n", type=int, default=5, help="Number of deepest call chains to display")
+    parser = argparse.ArgumentParser(
+        description="Static Compile-Time Stack Usage Graph Propagation Solver",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Standard analysis using MachineFunction-derived sizes (stack-size-collector output):
+  python analyzer.py --sizes stack_sizes.json --cg call_graph.json
+
+  # Using legacy clang -fstack-usage .su files:
+  python analyzer.py --sizes test/test_code.su --cg call_graph.json
+
+  # RTOS safety report with per-task stack allocations:
+  python analyzer.py --sizes stack_sizes.json --cg call_graph.json \\
+    --rtos-report \\
+    --task-allocs "vSensorTask=1024,vCommsTask=512,vControlTask=2048"
+        """
+    )
+
+    # Input files
+    parser.add_argument("--sizes",
+        default="stack_sizes.json",
+        help="Path to stack sizes JSON (from stack-size-collector) or .su file "
+             "(from clang -fstack-usage). Default: stack_sizes.json")
+    parser.add_argument("--cg",
+        default="call_graph.json",
+        help="Path to call_graph.json (from stack-extractor). Default: call_graph.json")
+
+    # Analysis tuning
+    parser.add_argument("--indirect-cost",
+        type=int, default=256,
+        help="Upper-bound stack cost (bytes) assumed for each indirect/virtual call. "
+             "Default: 256")
+    parser.add_argument("--threshold",
+        type=int, default=1024,
+        help="Cumulative depth threshold (bytes) above which a path is flagged. "
+             "Default: 1024")
+    parser.add_argument("--top-n",
+        type=int, default=5,
+        help="Number of deepest call chains to display. Default: 5")
+
+    # RTOS report mode
+    parser.add_argument("--rtos-report",
+        action="store_true",
+        help="Enable RTOS task safety report: compares worst-case depth against "
+             "each task's configured stack allocation.")
+    parser.add_argument("--stack-alloc",
+        type=int, default=2048,
+        help="Default stack allocation (bytes) for tasks without a specific entry "
+             "in --task-allocs. Default: 2048")
+    parser.add_argument("--task-allocs",
+        default="",
+        help="Per-task stack allocations as comma-separated task=bytes pairs. "
+             'Example: "vSensorTask=1024,vCommsTask=512,vControlTask=2048"')
+
     args = parser.parse_args()
 
     console = Console() if RICH_AVAILABLE else None
     print_banner(console)
 
+    # -------------------------------------------------------------------------
     # Load JSON inputs
+    # -------------------------------------------------------------------------
     if not os.path.exists(args.sizes) or not os.path.exists(args.cg):
-        err_msg = f"Error: Input files '{args.sizes}' or '{args.cg}' not found. Run stack-extractor first."
+        err_msg = (f"Error: Input files '{args.sizes}' or '{args.cg}' not found.\n"
+                   f"  Run stack-extractor (for call graph) and stack-size-collector "
+                   f"(for frame sizes) first.")
         if RICH_AVAILABLE:
             console.print(f"[bold red]{err_msg}[/bold red]")
         else:
             print(err_msg)
         sys.exit(1)
 
+    # Load stack sizes — support both JSON (stack-size-collector) and
+    # .su files (clang -fstack-usage, legacy fallback)
     sizes = {}
     if args.sizes.endswith(".su"):
         with open(args.sizes, "r") as f:
@@ -162,14 +327,22 @@ def main():
                         continue
                     func_name = func_part.split(':')[-1]
                     sizes[func_name] = size_val
+        if RICH_AVAILABLE:
+            console.print(f"[dim yellow][note] Loaded frame sizes from .su file "
+                          f"(clang -fstack-usage fallback): {args.sizes}[/dim yellow]")
     else:
         with open(args.sizes, "r") as f:
             sizes = json.load(f)
+        if RICH_AVAILABLE:
+            console.print(f"[dim green][ok] Loaded MachineFunction frame sizes from: "
+                          f"{args.sizes}[/dim green]")
             
     with open(args.cg, "r") as f:
         graph = json.load(f)
 
+    # -------------------------------------------------------------------------
     # Perform Strongly Connected Components detection for recursion checks
+    # -------------------------------------------------------------------------
     sccs = find_sccs(graph)
     recursive_groups = []
     has_recursion = False
@@ -185,7 +358,9 @@ def main():
                 recursive_groups.append(scc)
                 has_recursion = True
 
+    # -------------------------------------------------------------------------
     # Propagate and solve stack depths
+    # -------------------------------------------------------------------------
     memo = {}
     recursion_flags = defaultdict(bool)
     
@@ -203,7 +378,14 @@ def main():
     for entry in entry_points:
         compute_cumulative_stack(entry, graph, sizes, set(), memo, recursion_flags, args.indirect_cost)
 
+    # Also propagate from all graph nodes (so non-entry deep functions are memoized)
+    for node in graph:
+        if node not in memo:
+            compute_cumulative_stack(node, graph, sizes, set(), memo, recursion_flags, args.indirect_cost)
+
+    # -------------------------------------------------------------------------
     # Format and present results
+    # -------------------------------------------------------------------------
     if RICH_AVAILABLE:
         # 1. Summary Box
         total_funcs = len(graph)
@@ -213,7 +395,11 @@ def main():
             f"• [bold]Total Functions Statically Analyzed:[/bold] {total_funcs}\n"
             f"• [bold]Deepest Estimated Stack Path:[/bold] {max_depth} bytes\n"
             f"• [bold]Configured Indirect Call Penalty:[/bold] {args.indirect_cost} bytes\n"
-            f"• [bold]Global Overflow Alert Threshold:[/bold] {args.threshold} bytes"
+            f"• [bold]Global Overflow Alert Threshold:[/bold] {args.threshold} bytes\n"
+            f"• [bold]Frame Size Source:[/bold] "
+            + ("[cyan]MachineFunction (stack-size-collector)[/cyan]"
+               if not args.sizes.endswith(".su")
+               else "[yellow]clang -fstack-usage (.su fallback)[/yellow]")
         )
         console.print(Panel(summary_text, title="[bold yellow]Analysis Summary[/bold yellow]", border_style="yellow"))
         console.print()
@@ -293,6 +479,15 @@ def main():
             console.print(tree)
             console.print()
             displayed += 1
+
+        # 5. RTOS Safety Report (if requested)
+        if args.rtos_report:
+            task_allocs = parse_task_allocs(args.task_allocs)
+            print_rtos_report(
+                entry_points, memo, sizes, recursion_flags,
+                task_allocs, args.stack_alloc, console
+            )
+
     else:
         # Fallback raw presentation
         print("--- Stack Analyzer Propagation Results ---")
@@ -305,6 +500,13 @@ def main():
             print(f"  {node}: {val[0]} bytes (Frame: {sizes.get(node, 0)} bytes, next: {val[1]})")
             path = reconstruct_path(node, memo)
             print(f"    Path: {' -> '.join(path)}")
+
+        if args.rtos_report:
+            task_allocs = parse_task_allocs(args.task_allocs)
+            print_rtos_report(
+                entry_points, memo, sizes, recursion_flags,
+                task_allocs, args.stack_alloc, None
+            )
 
 if __name__ == "__main__":
     main()

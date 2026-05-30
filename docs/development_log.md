@@ -15,30 +15,37 @@ During initial planning, three different architectural directions were analyzed:
 3. **Option C: Hybrid C++ Backend & Python Solver (Selected)**
    * *Pros*: Peak accuracy and maximum design flexibility. The C++ backend performs low-level backend operations (parsing LLVM IR, running code-generation pipeline, extracting finalized target-specific `MachineFrameInfo` sizes). The Python frontend performs high-level graph solving (Tarjan's SCC cycle isolation, memoized DAG propagation, rich colored visualizations).
 
+We completed the architecture by creating:
+- `stack-extractor`: Focuses purely on extracting direct and indirect call graphs from LLVM IR.
+- `stack-size-collector`: A dedicated native tool that runs the full LLVM target machine code generation pipeline on LLVM IR, hooks a `MachineFunctionPass` post-PEI (Prolog/Epilog Insertion), and pulls the authoritative target-specific `MachineFrameInfo::getStackSize()`.
+
 ---
 
 ## 2. Milestone Logs
 
 ### Milestone 1: Target Environment Calibration
-- **Research**: Investigated the user's local Windows workstation environment. Identified that `WSL Ubuntu 24.04` is available.
-- **Action**: Set up `llvm-dev` (LLVM 18), `clang-18`, `cmake`, and `build-essential` inside the WSL environment to ensure clean Linux ELF compilation support.
+- **Research**: Investigated the user's local Windows workstation environment. Identified that `WSL Ubuntu` is available.
+- **Action**: Set up LLVM dev libraries, CMake, and Python dependencies to ensure clean cross-compilation support.
 
-### Milestone 2: C++ Backend Extractor (`stack-extractor`)
-- **Design**: Implemented a standalone driver program using LLVM's C++ APIs. It reads LLVM IR (`.ll` or `.bc`), initiates standard machine target builders, and creates the legacy `PassManager`.
-- **Breakthrough**: Realized that if we manually call `TM->addPassesToEmitFile()` to populate the legacy pipeline and then append our custom `MachineFunctionPass`, LLVM will execute our pass *after* Prolog/Epilog Insertion (PEI). This is the exact moment stack frames are finalized, guaranteeing 100% accurate static measurements.
-- **Data Export**: Designed raw, lightweight JSON exporters for function sizes and direct/indirect calls, avoiding external JSON library linkages to keep compilation dependencies minimal.
+### Milestone 2: C++ Backend Call Graph Extractor (`stack-extractor`)
+- **Design**: Implemented a standalone driver program using LLVM's C++ IR APIs. It reads LLVM IR (`.ll` or `.bc`) and exports a raw, lightweight JSON adjacency list of direct and indirect calls.
 
 ### Milestone 3: Python Solver (`analyzer.py`)
 - **Algorithms**: Implemented Tarjan's SCC cycle isolation to gracefully flag direct and mutual recursion loops, preventing infinite cycles.
 - **Propagation**: Designed a memoized dynamic programming recursive DAG walker to find the worst-case cumulative stack depth starting from entry points.
 - **Rich Aesthetics**: Integrated the Python `rich` CLI console library. Developed a judge-ready terminal experience showing summary stat cards, cycle warnings, and gradient color-coded trees for worst-case call paths.
+- **RTOS Extension**: Added support for `--rtos-report`, `--stack-alloc`, and `--task-allocs` to directly match worst-case static analysis depths against expected RTOS task budgets and output safety warnings.
 
-### Milestone 4: Simulated RTOS Test Suite (`test_code.c`)
-- **Design**: Created a representative RTOS test suite:
-  - `vTask1` triggers a sequential call chain (`vTask1` -> `process_sensor_data` -> `format_json` -> `hash_data`), using a heavy local `char[512]` buffer to demonstrate `Alloca` size analysis.
-  - `vTask2` triggers dynamic function dispatch via a function pointer to demonstrate indirect call bounds.
-  - `vTask3` triggers direct (`factorial`) and mutual recursion (`ping` -> `pong` -> `ping`) to showcase SCC loop warnings.
-- **Evaluation Runner**: Created `run_eval.sh` to compile test cases under three optimization tiers (`-O0`, `-O2 -fno-inline`, `-O2`) and display analysis side-by-side.
+### Milestone 4: Native LLVM MachineFunction Pass (`stack-size-collector`) [NEW]
+- **Design**: Built `StackSizeCollector.cpp` which sets up standard target machines (e.g., `x86_64`, `ARM`, `AArch64`) and uses LLVM's `TargetMachine::addPassesToEmitFile` legacy pipeline wrapper to schedule a custom `MachineFunctionPass` after Prolog/Epilog Insertion (PEI).
+- **Result**: Fulfills **Deliverable #1** completely. The tool prints a summary of analyzed functions and exports a precise `stack_sizes.json` map of actual backend stack frames (inclusive of spills, alignment, padding, and local arrays).
+
+### Milestone 5: RTOS Test Suite & Ground-Truth Evaluation (`freertos_eval.c`) [NEW]
+- **Design**: Created a representative RTOS evaluation codebase under `test/freertos_eval.c` containing:
+  - `vSensorTask`: Models deep calls with a heavy local `char[512]` JSON formatting buffer.
+  - `vCommsTask`: Models dynamic protocol dispatch via function pointers (indirect call).
+  - `vControlTask`: Models a PID-like controller loop with mutual recursion (`pid_correct` ↔ `pid_anti_windup`).
+- **Evaluation Runner**: Created `test/run_rtos_eval.sh` to compile test cases under three optimization tiers (`-O0`, `-O1`, `-O2 -fno-inline`), invoke the dual C++ backends, and run `analyzer.py --rtos-report` to generate clear comparison reports.
 
 ---
 

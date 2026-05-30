@@ -4,19 +4,20 @@ This document details the software interfaces, internal LLVM API mechanisms, and
 
 ---
 
-## 1. Backend Engine (C++) — `stack-extractor`
+## 1. Backend Engine (C++)
 
-The C++ executable parses LLVM IR and leverages target-specific code generation pipelines to calculate static stack frames.
+The backend consists of two compiled tools parsing LLVM IR:
+1. `stack-extractor`: Extracts the call graph structure and indirect call types.
+2. `stack-size-collector`: Computes physical machine-level stack frames.
 
-### StackSizeCollector Class (MachineFunctionPass)
+### StackSizeCollectorPass (MachineFunctionPass)
 
-Inherits from `llvm::MachineFunctionPass`. This pass is designed to extract finalized stack frame measurements.
+Inherits from `llvm::MachineFunctionPass`. This pass is designed to extract finalized stack frame measurements post-instruction selection, post-register-allocation, and post-PrologEpilogInserter (PEI).
 
 ```cpp
-class StackSizeCollector : public llvm::MachineFunctionPass {
-public:
+struct StackSizeCollectorPass : public llvm::MachineFunctionPass {
     static char ID;
-    StackSizeCollector();
+    StackSizeCollectorPass();
     
     // Core callback run on every MachineFunction
     bool runOnMachineFunction(llvm::MachineFunction &MF) override;
@@ -33,28 +34,21 @@ public:
    - **Alignment Padding**: Extra space required to align objects on proper stack word boundaries.
 3. **Extraction**: The pass queries `MF.getFrameInfo().getStackSize()` and inserts the data into a global map indexed by the function's assembly name.
 
-### Static Call Graph Scanner
-
-Scanning is performed at the IR level by traversing all instructions inside every basic block of defined functions.
-
-- **Direct Call Extraction**: Scans for `llvm::CallBase` instruction instances. If `CB->getCalledFunction()` is non-null, the direct callee name is extracted.
-- **Indirect Call Signature Extraction**: If the callee is null, the target is resolved through a function pointer. The analyzer prints the function pointer's signature representation using `CB->getFunctionType()->print()` and registers it for user-configured boundary analysis.
-
 ---
 
 ## 2. Interchange Data Formats (JSON)
 
-The C++ backend communicates with the Python analyzer using two structured JSON files:
+The C++ backends communicate with the Python analyzer using two structured JSON files:
 
 ### Schema 1: `stack_sizes.json`
 A map of function names to their computed stack frame sizes in bytes.
 
 ```json
 {
-  "vTask1": 0,
-  "process_sensor_data": 16,
-  "format_json": 528,
-  "hash_data": 32
+  "vSensorTask": 16,
+  "acquire_sensor": 64,
+  "format_sensor_json": 592,
+  "compute_checksum": 48
 }
 ```
 
@@ -63,13 +57,13 @@ An adjacency list representing direct callees and a list of indirect call type s
 
 ```json
 {
-  "vTask1": {
-    "callees": ["process_sensor_data"],
+  "vSensorTask": {
+    "callees": ["acquire_sensor", "format_sensor_json"],
     "indirect_calls": []
   },
-  "vTask2": {
+  "dispatch_protocol": {
     "callees": [],
-    "indirect_calls": ["void (int)"]
+    "indirect_calls": ["void (i8*, i32)"]
   }
 }
 ```
