@@ -171,8 +171,7 @@ compile-time-stack-usage-analyser/
 ├── README.md                   # This file
 ├── DESIGN.md                   # Approach and design alternatives
 ├── IMPLEMENTATION.md           # LLVM-specific implementation details
-├── EVALUATION.md               # Metrics, test cases, and results
-└── RECORDING.md                # Demo recording guide
+└── EVALUATION.md               # Metrics, test cases, and results
 ```
 
 ---
