@@ -102,7 +102,7 @@ class AnalysisRequestHandler(http.server.SimpleHTTPRequestHandler):
         output_lines = []
 
         # ── Step 1: Compile C → LLVM IR inside WSL ──
-        cmd = f'wsl clang {opt} -S -emit-llvm "{wsl_c}" -o "{wsl_ll}"'
+        cmd = f'wsl -d Ubuntu clang {opt} -S -emit-llvm "{wsl_c}" -o "{wsl_ll}"'
         output_lines.append(f"$ {cmd}")
         rc, stdout, stderr = run_cmd(cmd)
         if rc != 0:
@@ -110,7 +110,7 @@ class AnalysisRequestHandler(http.server.SimpleHTTPRequestHandler):
             return "\n".join(output_lines)
 
         # ── Step 2: Extract Call Graph ──
-        cmd = f'wsl "{wsl_dir}/build/stack-extractor" "{wsl_ll}" "{wsl_cg}"'
+        cmd = f'wsl -d Ubuntu "{wsl_dir}/build/stack-extractor" "{wsl_ll}" "{wsl_cg}"'
         output_lines.append(f"$ {cmd}")
         rc, stdout, stderr = run_cmd(cmd)
         if stdout:
@@ -120,7 +120,7 @@ class AnalysisRequestHandler(http.server.SimpleHTTPRequestHandler):
             return "\n".join(output_lines)
 
         # ── Step 3: Collect Stack Sizes ──
-        cmd = f'wsl "{wsl_dir}/build/stack-size-collector" "{wsl_ll}" "{wsl_sizes}"'
+        cmd = f'wsl -d Ubuntu "{wsl_dir}/build/stack-size-collector" "{wsl_ll}" "{wsl_sizes}"'
         output_lines.append(f"$ {cmd}")
         rc, stdout, stderr = run_cmd(cmd)
         if stdout:

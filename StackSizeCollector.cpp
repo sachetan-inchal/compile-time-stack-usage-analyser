@@ -192,14 +192,14 @@ int main(int argc, char **argv) {
     if (targetTriple.empty()) {
         // Default: use the module's embedded triple if present,
         // otherwise fall back to the host machine triple.
-        targetTriple = Mod->getTargetTriple();
+        targetTriple = Mod->getTargetTriple().str();
         if (targetTriple.empty()) {
             targetTriple = sys::getDefaultTargetTriple();
             std::cerr << "[info] No target triple in IR, using host: "
                       << targetTriple << "\n";
         }
     }
-    Mod->setTargetTriple(targetTriple);
+    Mod->setTargetTriple(Triple(targetTriple));
 
     // ---- Look up the target ----------------------------------------------
     std::string errorMsg;
@@ -216,7 +216,7 @@ int main(int argc, char **argv) {
     std::optional<Reloc::Model> RM = std::nullopt; // default relocation model
     std::unique_ptr<TargetMachine> TM(
         TheTarget->createTargetMachine(
-            targetTriple,
+            Triple(targetTriple),
             /*CPU=*/"",       // generic CPU; use "cortex-m4" etc. for embedded
             /*Features=*/"",  // no extra features
             Options,
