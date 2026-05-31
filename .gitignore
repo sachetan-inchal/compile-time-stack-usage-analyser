@@ -35,3 +35,19 @@ Thumbs.db
 # Large generated codebase export
 /codebase.txt
 
+# Generated output files
+/stack_sizes.json
+/test_results_output.txt
+/test_results_utf8.txt
+
+# Word / Office documents (reports)
+*.docx
+*.doc
+*.xlsx
+*.pptx
+
+# Scratch / utility scripts not part of the project
+/context.txt
+/reference.txt
+/repo_to_text.py
+
