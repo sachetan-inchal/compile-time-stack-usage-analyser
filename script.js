@@ -483,3 +483,30 @@ function initScrollAnimations() {
 
     animElements.forEach(el => observer.observe(el));
 }
+
+// ===================== Fullscreen Toggle =====================
+function toggleFullscreen() {
+    const term = document.getElementById('terminal');
+    const btn = document.getElementById('fullscreen-btn');
+    const isFull = term.classList.toggle('fullscreen');
+    
+    if (isFull) {
+        btn.innerHTML = '🗗 Exit Fullscreen';
+        showToast('🖥️ Fullscreen Mode Enabled (Press Esc or click button to exit)', 'ok');
+    } else {
+        btn.innerHTML = '🖥️ Fullscreen';
+    }
+}
+
+// Exit fullscreen on Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const term = document.getElementById('terminal');
+        const btn = document.getElementById('fullscreen-btn');
+        if (term && term.classList.contains('fullscreen')) {
+            term.classList.remove('fullscreen');
+            btn.innerHTML = '🖥️ Fullscreen';
+        }
+    }
+});
+
