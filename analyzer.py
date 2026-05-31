@@ -4,6 +4,14 @@ import sys
 import os
 from collections import defaultdict
 
+# Force stdout/stderr to UTF-8 on Windows to prevent UnicodeEncodeError with box-drawing / unicode characters
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
+
 # Selective import of rich for gorgeous console visuals
 try:
     from rich.console import Console
@@ -144,6 +152,67 @@ def parse_task_allocs(task_allocs_str):
                 pass
     return result
 
+def parse_ll_alloca_sizes(ll_path):
+    """
+    Parse LLVM IR .ll file and extract per-function stack frame estimates
+    by summing alloca instruction sizes.
+    Returns dict: { func_name: total_alloca_bytes }
+    """
+    import re
+    sizes = {}
+    if not ll_path or not os.path.exists(ll_path):
+        return sizes
+
+    current_func = None
+    total_bytes = 0
+
+    # Patterns
+    func_def   = re.compile(r'^define\s+.*?@([A-Za-z_][A-Za-z0-9_.]*)\s*\(')
+    func_end   = re.compile(r'^\}')
+    # alloca i8, i64 N  or  alloca [N x i8]  or  alloca i32  etc.
+    alloca_arr = re.compile(r'alloca\s+\[(\d+)\s+x\s+i(\d+)\]')
+    alloca_n   = re.compile(r'alloca\s+i(\d+),\s+i(?:32|64)\s+(\d+)')
+    alloca_one = re.compile(r'alloca\s+i(\d+)')
+    alloca_ptr = re.compile(r'alloca\s+ptr')
+
+    try:
+        with open(ll_path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                m = func_def.search(line)
+                if m:
+                    current_func = m.group(1)
+                    total_bytes = 0
+                    continue
+                if func_end.match(line):
+                    if current_func is not None:
+                        sizes[current_func] = sizes.get(current_func, 0) + total_bytes
+                    current_func = None
+                    total_bytes = 0
+                    continue
+                if current_func and 'alloca' in line:
+                    m = alloca_arr.search(line)
+                    if m:
+                        count, bits = int(m.group(1)), int(m.group(2))
+                        total_bytes += count * (bits // 8)
+                        continue
+                    m = alloca_n.search(line)
+                    if m:
+                        bits, count = int(m.group(1)), int(m.group(2))
+                        total_bytes += count * (bits // 8)
+                        continue
+                    m = alloca_one.search(line)
+                    if m:
+                        total_bytes += int(m.group(1)) // 8
+                        continue
+                    if alloca_ptr.search(line):
+                        total_bytes += 8  # pointer = 8 bytes on 64-bit
+    except Exception:
+        pass
+
+    return sizes
+
+
 def print_rtos_report(entry_points, memo, sizes, recursion_flags,
                        task_allocs, default_alloc, console):
     """
@@ -263,6 +332,10 @@ Examples:
     parser.add_argument("--cg",
         default="call_graph.json",
         help="Path to call_graph.json (from stack-extractor). Default: call_graph.json")
+    parser.add_argument("--ll",
+        default="",
+        help="Optional path to the LLVM IR .ll file. Used to extract alloca-based "
+             "frame sizes when MachineFunction sizes are all zero. Default: (none)")
 
     # Analysis tuning
     parser.add_argument("--indirect-cost",
@@ -337,6 +410,13 @@ Examples:
             console.print(f"[dim green][ok] Loaded MachineFunction frame sizes from: "
                           f"{args.sizes}[/dim green]")
             
+    if args.ll and os.path.exists(args.ll):
+        ll_sizes = parse_ll_alloca_sizes(args.ll)
+        for func, sz in ll_sizes.items():
+            sizes[func] = max(sizes.get(func, 0), sz)
+        if RICH_AVAILABLE:
+            console.print(f"[dim green][ok] Augmented frame sizes with alloca estimation from LLVM IR: {args.ll}[/dim green]")
+
     with open(args.cg, "r") as f:
         graph = json.load(f)
 
@@ -428,12 +508,13 @@ Examples:
             # Formatting status & coloring thresholds
             status = "[green]OK[/green]"
             cum_str = f"[green]{cum_stack} B[/green]"
+            
+            # Print the exact values being compared before status is assigned
+            print(f"[DEBUG] Comparing: usage={cum_stack}, threshold={args.threshold}")
+            
             if cum_stack >= args.threshold:
                 status = "[blink bold red]⚠️ RISK[/blink bold red]"
                 cum_str = f"[bold red]{cum_stack} B[/bold red]"
-            elif cum_stack >= args.threshold * 0.8:
-                status = "[yellow]WARN[/yellow]"
-                cum_str = f"[yellow]{cum_stack} B[/yellow]"
 
             if recursion_flags[entry]:
                 status += " [red](Recursive)[/red]"
@@ -445,40 +526,80 @@ Examples:
 
         # 4. Top-N Deepest Call Chains
         console.print(f"[bold cyan]Top-{args.top_n} Deepest Statically Estimated Call Chains:[/bold cyan]")
-        
-        sorted_nodes = sorted(memo.keys(), key=lambda x: memo[x][0], reverse=True)
+
+        # Compute call-depth for each node (used as tiebreaker when all sizes are 0)
+        def call_depth(node, graph, _visited=None):
+            if _visited is None: _visited = set()
+            if node in _visited: return 0
+            _visited.add(node)
+            callees = graph.get(node, {}).get('callees', [])
+            return 1 + max((call_depth(c, graph, set(_visited)) for c in callees), default=0)
+
+        all_zero_sizes = all(v == 0 for v in sizes.values()) if sizes else True
+
+        # Sort: by cumulative bytes first; if all zero, fall back to call-graph depth
+        def sort_key(n):
+            depth_bytes = memo[n][0]
+            path_len = len(reconstruct_path(n, memo))
+            has_callees = len(graph.get(n, {}).get('callees', [])) > 0
+            is_entry = n in entry_points
+            return (depth_bytes, path_len, int(has_callees), int(is_entry))
+
+        sorted_nodes = sorted(memo.keys(), key=sort_key, reverse=True)
         displayed = 0
         for node in sorted_nodes:
             if displayed >= args.top_n:
                 break
-            # Only display paths starting at entry points or deep functions
             path = reconstruct_path(node, memo)
-            if len(path) <= 1 and sizes.get(node, 0) == 0:
-                continue
-                
+            callees = graph.get(node, {}).get('callees', [])
+            # Skip completely isolated leaf nodes that have no callees and zero size
+            # UNLESS we are in all-zero-sizes mode, in which case show anything with callees or recursion
+            if not all_zero_sizes:
+                if len(path) <= 1 and sizes.get(node, 0) == 0 and not callees:
+                    continue
+            else:
+                # In all-zero mode: show entry points and nodes with callees or recursion
+                is_recursive = recursion_flags.get(node, False)
+                if not callees and not is_recursive and node not in entry_points:
+                    continue
+
             cum_stack = memo[node][0]
-            
+            is_recursive = recursion_flags.get(node, False)
+            recursive_label = " [bold yellow](♾ Recursive)[/bold yellow]" if is_recursive else ""
+
             tree_title = Text.assemble(
-                ("Worst-Case Chain from ", "white"),
+                ("Call chain: ", "white"),
                 (f"{node}", "cyan bold"),
-                (f" (Total: {cum_stack} bytes)", "red" if cum_stack >= args.threshold else "green")
+                (f"{' (♾ Recursive)' if is_recursive else ''}", "yellow"),
+                (f"  [{cum_stack} bytes cumulative]", "red" if cum_stack >= args.threshold else "dim green")
             )
             tree = Tree(tree_title)
-            
+
             curr_tree = tree
-            for idx, p_node in enumerate(path):
+            for p_node in path:
                 if p_node.startswith("<Indirect:"):
-                    curr_tree.add(f"[italic yellow]↪ {p_node} (+{args.indirect_cost} bytes boundary)[/italic yellow]")
+                    curr_tree.add(f"[italic yellow]↪ {p_node} (+{args.indirect_cost} bytes est.)[/italic yellow]")
                 elif "Recursion Loop" in p_node:
                     curr_tree.add(f"[bold red]↪ ↺ {p_node}[/bold red]")
                 else:
                     own_size = sizes.get(p_node, 0)
                     cum_node_size = memo.get(p_node, (0, None))[0]
-                    curr_tree = curr_tree.add(f"[bold cyan]↪ {p_node}[/bold cyan] [magenta]({own_size} B frame)[/magenta] [dim green](cum: {cum_node_size} B)[/dim green]")
-            
+                    node_callees = graph.get(p_node, {}).get('callees', [])
+                    callee_str = f" → {', '.join(node_callees[:3])}{'...' if len(node_callees)>3 else ''}" if node_callees else ""
+                    curr_tree = curr_tree.add(
+                        f"[bold cyan]↪ {p_node}[/bold cyan]"
+                        f" [magenta]({own_size} B frame)[/magenta]"
+                        f" [dim green](cum: {cum_node_size} B)[/dim green]"
+                        f"[dim]{callee_str}[/dim]"
+                    )
+
             console.print(tree)
             console.print()
             displayed += 1
+
+        if displayed == 0:
+            console.print("[dim]  (No call chains to display — all functions are leaf nodes)[/dim]")
+            console.print()
 
         # 5. RTOS Safety Report (if requested)
         if args.rtos_report:

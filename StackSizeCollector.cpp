@@ -34,11 +34,13 @@
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
@@ -74,18 +76,13 @@ struct StackSizeCollectorPass : public MachineFunctionPass {
     bool runOnMachineFunction(MachineFunction &MF) override {
         const MachineFrameInfo &MFI = MF.getFrameInfo();
 
-        // getStackSize() returns the total frame size in bytes after
-        // register allocation and frame layout have been finalized.
-        // This includes:
-        //   - Local variable allocas
-        //   - Spilled register save slots
-        //   - Alignment padding
-        //   - Variable-size object slots (if present, size is 0 here — dynamic)
         uint64_t frameSize = MFI.getStackSize();
-
-        // Demangle-safe: getName() returns the IR-level name (mangled for C++,
-        // plain for C). For C programs this is exactly the source function name.
         std::string funcName = MF.getName().str();
+
+        errs() << "[debug] Function: " << funcName
+               << " | StackSize: " << frameSize
+               << " | HasStackObjects: " << MFI.hasStackObjects()
+               << " | NumObjects: " << MFI.getNumObjects() << "\n";
 
         StackFrameSizes[funcName] = frameSize;
 
@@ -95,6 +92,23 @@ struct StackSizeCollectorPass : public MachineFunctionPass {
 };
 
 char StackSizeCollectorPass::ID = 0;
+
+// ---------------------------------------------------------------------------
+// InterceptPassManager: intercepts pass registration to inject our pass
+// right before LLVM cleans up / deletes the MachineFunction objects.
+// ---------------------------------------------------------------------------
+class InterceptPassManager : public legacy::PassManager {
+private:
+    bool addedCollector = false;
+public:
+    void add(Pass *P) override {
+        if (P && P->getPassName() == "Free MachineFunction" && !addedCollector) {
+            legacy::PassManager::add(new StackSizeCollectorPass());
+            addedCollector = true;
+        }
+        legacy::PassManager::add(P);
+    }
+};
 
 // ---------------------------------------------------------------------------
 // JSON escape helper
@@ -140,6 +154,10 @@ int main(int argc, char **argv) {
         }
     }
 
+    // ---- Initialize LLVM Pass Registry for Codegen ----------------------
+    PassRegistry *PR = PassRegistry::getPassRegistry();
+    initializeCodeGen(*PR);
+
     // ---- Initialize LLVM targets -----------------------------------------
     // Explicitly initialize the supported architectures to avoid link errors
     // with unlinked backends (e.g. WebAssembly, SystemZ).
@@ -174,14 +192,14 @@ int main(int argc, char **argv) {
     if (targetTriple.empty()) {
         // Default: use the module's embedded triple if present,
         // otherwise fall back to the host machine triple.
-        targetTriple = Mod->getTargetTriple().str();
+        targetTriple = Mod->getTargetTriple();
         if (targetTriple.empty()) {
             targetTriple = sys::getDefaultTargetTriple();
             std::cerr << "[info] No target triple in IR, using host: "
                       << targetTriple << "\n";
         }
     }
-    Mod->setTargetTriple(Triple(targetTriple));
+    Mod->setTargetTriple(targetTriple);
 
     // ---- Look up the target ----------------------------------------------
     std::string errorMsg;
@@ -216,10 +234,9 @@ int main(int argc, char **argv) {
     Mod->setDataLayout(TM->createDataLayout());
 
     // ---- Build legacy pass manager with codegen pipeline -----------------
-    // We use the legacy PassManager because MachineFunctionPass is part of
-    // the legacy codegen infrastructure. The new PassManager does not yet
-    // support MachineFunctionPass directly.
-    legacy::PassManager PM;
+    // We use InterceptPassManager to dynamically inject our collector pass
+    // right before FreeMachineFunction is scheduled at the end of the codegen pipeline.
+    InterceptPassManager PM;
 
     // TargetLibraryInfo is required by several codegen passes
     TargetLibraryInfoImpl TLII{Triple(targetTriple)};
@@ -234,18 +251,6 @@ int main(int argc, char **argv) {
         std::cerr << "Error: Target does not support object code emission.\n";
         return 1;
     }
-
-    // Insert our collector pass.
-    // Note: This is added AFTER addPassesToEmitFile() intentionally.
-    // The legacy PM executes passes in registration order; however,
-    // addPassesToEmitFile() inserts MachineFunctionPass wrappers into the
-    // pipeline. Our pass runs as part of that pipeline (it will be scheduled
-    // after frame finalization by the pass manager's dependency tracking).
-    //
-    // For precise post-PEI scheduling, we rely on the pass manager inserting
-    // MachineFunctionPass instances in dependency order. getStackSize() is
-    // valid after PrologEpilogInserter has run.
-    PM.add(new StackSizeCollectorPass());
 
     // ---- Run the pipeline ------------------------------------------------
     std::cerr << "[info] Running codegen pipeline on: " << inputFile << "\n";

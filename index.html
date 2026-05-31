@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compile-Time Stack Usage Analyzer | LLVM-Native Static Analysis</title>
+    <meta name="description" content="An LLVM analysis pass that statically estimates maximum stack usage for each function including its call chain, identifying call paths that risk stack overflow.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar" id="navbar">
+        <div class="nav-container">
+            <a href="#" class="nav-logo">
+                <span class="logo-icon">▲</span>
+                <span>StackAnalyzer</span>
+            </a>
+            <div class="nav-links">
+                <a href="#about">About</a>
+                <a href="#architecture">Architecture</a>
+                <a href="#deliverables">Deliverables</a>
+                <a href="#demo">Demo</a>
+                <a href="#metrics">Metrics</a>
+                <a href="#tech">Tech Stack</a>
+            </div>
+            <a href="https://github.com/sachetan-inchal/compile-time-stack-usage-analyser" target="_blank" class="nav-github">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                GitHub
+            </a>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <header class="hero" id="hero">
+        <div class="hero-bg-grid"></div>
+        <div class="hero-glow"></div>
+        <div class="hero-content">
+            <div class="hero-badge">LLVM-Native • MachineFunction Pass • Static Analysis</div>
+            <h1>Compile-Time Stack<br>Usage Analyzer</h1>
+            <p class="hero-desc">
+                An LLVM analysis pass that statically estimates <strong>maximum stack usage</strong> for each 
+                function including its entire call chain — identifying call paths that risk 
+                <strong>stack overflow</strong> in embedded, kernel, and RTOS development.
+            </p>
+            <div class="hero-stats">
+                <div class="stat-item">
+                    <span class="stat-value" data-count="3">0</span>
+                    <span class="stat-label">C++ / Python Tools</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" data-count="5">0</span>
+                    <span class="stat-label">Deliverables Completed</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" data-count="3">0</span>
+                    <span class="stat-label">Arch Backends</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" data-count="1200">0</span>
+                    <span class="stat-label">Lines of Code</span>
+                </div>
+            </div>
+            <div class="hero-actions">
+                <a href="#demo" class="btn btn-primary">View Live Demo</a>
+                <a href="#architecture" class="btn btn-outline">How It Works</a>
+            </div>
+        </div>
+        <div class="scroll-indicator">
+            <span>Scroll to explore</span>
+            <div class="scroll-arrow"></div>
+        </div>
+    </header>
+
+    <!-- Problem Section -->
+    <section class="section" id="about">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">The Problem</span>
+                <h2>Why This Matters</h2>
+                <p class="section-subtitle">Stack overflow is the #1 cause of mysterious crashes in embedded systems</p>
+            </div>
+            <div class="problem-grid">
+                <div class="problem-card problem-existing">
+                    <div class="problem-icon">⚠️</div>
+                    <h3>Existing Tools Fall Short</h3>
+                    <div class="problem-comparison">
+                        <div class="tool-limit">
+                            <code>GCC -fstack-usage</code>
+                            <span>Per-function only, no call chain</span>
+                        </div>
+                        <div class="tool-limit">
+                            <code>Clang -Wframe-larger-than</code>
+                            <span>Per-frame only, no call chain</span>
+                        </div>
+                    </div>
+                    <p>Neither tells you <em>"main→A→B→C uses 48KB of stack total"</em> — which is what embedded developers actually need.</p>
+                </div>
+                <div class="problem-card problem-impact">
+                    <div class="problem-icon">💥</div>
+                    <h3>Real-World Impact</h3>
+                    <ul class="impact-list">
+                        <li><span class="impact-num">1-8 KB</span> Typical RTOS task stack size</li>
+                        <li><span class="impact-num">#1</span> Cause of crashes in embedded systems</li>
+                        <li><span class="impact-num">Silent</span> Memory corruption from overflow</li>
+                        <li><span class="impact-num">0</span> Compilers provide call-chain analysis</li>
+                    </ul>
+                </div>
+                <div class="problem-card problem-solution">
+                    <div class="problem-icon">✅</div>
+                    <h3>Our Solution</h3>
+                    <p>An <strong>LLVM-native</strong> whole-program analysis that:</p>
+                    <ul class="solution-list">
+                        <li>Computes per-function stack frames via <code>MachineFunction</code></li>
+                        <li>Constructs the full static call graph</li>
+                        <li>Reports worst-case cumulative stack depth</li>
+                        <li>Detects recursion & handles indirect calls</li>
+                        <li>Flags paths exceeding configurable thresholds</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture Section -->
+    <section class="section section-dark" id="architecture">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Architecture</span>
+                <h2>How It Works</h2>
+                <p class="section-subtitle">Three-stage pipeline: Extract → Collect → Analyze</p>
+            </div>
+            <div class="pipeline">
+                <div class="pipeline-step">
+                    <div class="step-number">01</div>
+                    <div class="step-icon">📄</div>
+                    <h3>Source Code</h3>
+                    <p>C/C++ source files from embedded projects (FreeRTOS, Zephyr, bare-metal)</p>
+                    <div class="step-output">
+                        <code>clang -emit-llvm</code>
+                        <span class="arrow-down">↓</span>
+                        <code>.ll (LLVM IR)</code>
+                    </div>
+                </div>
+                <div class="pipeline-connector"></div>
+                <div class="pipeline-step">
+                    <div class="step-number">02</div>
+                    <div class="step-icon">🔍</div>
+                    <h3>stack-extractor</h3>
+                    <p>Scans LLVM IR for <code>CallBase</code> instructions, resolves direct calls and captures indirect call signatures</p>
+                    <div class="step-output">
+                        <code>C++ (IR-level)</code>
+                        <span class="arrow-down">↓</span>
+                        <code>call_graph.json</code>
+                    </div>
+                </div>
+                <div class="pipeline-connector"></div>
+                <div class="pipeline-step step-highlight">
+                    <div class="step-number">03</div>
+                    <div class="step-icon">⚙️</div>
+                    <h3>stack-size-collector</h3>
+                    <p>Runs LLVM's <strong>full codegen pipeline</strong> (ISel → RA → PEI) and hooks a <code>MachineFunctionPass</code> to read <code>MachineFrameInfo::getStackSize()</code></p>
+                    <div class="step-output">
+                        <code>C++ (Backend)</code>
+                        <span class="arrow-down">↓</span>
+                        <code>stack_sizes.json</code>
+                    </div>
+                </div>
+                <div class="pipeline-connector"></div>
+                <div class="pipeline-step">
+                    <div class="step-number">04</div>
+                    <div class="step-icon">📊</div>
+                    <h3>analyzer.py</h3>
+                    <p>Graph propagation solver: DFS with memoization, Tarjan's SCC for recursion, worst-case path reconstruction</p>
+                    <div class="step-output">
+                        <code>Python CLI</code>
+                        <span class="arrow-down">↓</span>
+                        <code>Rich Console Output</code>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Deliverables Section -->
+    <section class="section" id="deliverables">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Deliverables</span>
+                <h2>All 5 Deliverables — Completed</h2>
+            </div>
+            <div class="deliverables-grid">
+                <div class="deliverable-card" data-status="complete">
+                    <div class="del-header">
+                        <span class="del-num">#1</span>
+                        <span class="del-status">✅ Complete</span>
+                    </div>
+                    <h3>Per-Function Stack Frame Estimator</h3>
+                    <p>Operating on <code>MachineFunction</code> — covers alloca, spills, alignment padding</p>
+                    <div class="del-details">
+                        <div class="del-file"><span>📁</span> StackSizeCollector.cpp <span class="loc">290 lines</span></div>
+                        <ul>
+                            <li>Custom <code>MachineFunctionPass</code> implementation</li>
+                            <li>Reads <code>MachineFrameInfo::getStackSize()</code></li>
+                            <li>Full codegen pipeline via <code>addPassesToEmitFile()</code></li>
+                            <li>Multi-arch: x86_64, ARM, AArch64</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="deliverable-card" data-status="complete">
+                    <div class="del-header">
+                        <span class="del-num">#2</span>
+                        <span class="del-status">✅ Complete</span>
+                    </div>
+                    <h3>Call Graph Traversal</h3>
+                    <p>Computing worst-case cumulative stack depth per entry point</p>
+                    <div class="del-details">
+                        <div class="del-file"><span>📁</span> StackExtractor.cpp <span class="loc">120 lines</span></div>
+                        <div class="del-file"><span>📁</span> analyzer.py <span class="loc">513 lines</span></div>
+                        <ul>
+                            <li>IR-level call graph extraction (direct + indirect)</li>
+                            <li>DFS with memoization for worst-case propagation</li>
+                            <li>Automatic entry point identification</li>
+                            <li>Worst-case path reconstruction</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="deliverable-card" data-status="complete">
+                    <div class="del-header">
+                        <span class="del-num">#3</span>
+                        <span class="del-status">✅ Complete</span>
+                    </div>
+                    <h3>Recursion, Indirect Calls & Inlining</h3>
+                    <p>Detect and warn on recursion, configurable indirect call bounds, inlining-aware</p>
+                    <div class="del-details">
+                        <ul>
+                            <li>Tarjan's SCC algorithm for recursion detection</li>
+                            <li>Direct recursion (e.g., <code>factorial</code>)</li>
+                            <li>Mutual recursion (e.g., <code>ping ↔ pong</code>)</li>
+                            <li><code>--indirect-cost</code> configurable upper bound</li>
+                            <li>3-tier optimization comparison (-O0, -O2 -fno-inline, -O2)</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="deliverable-card" data-status="complete">
+                    <div class="del-header">
+                        <span class="del-num">#4</span>
+                        <span class="del-status">✅ Complete</span>
+                    </div>
+                    <h3>CLI Tool — Top-N Deepest Chains</h3>
+                    <p>Rich console output with per-function breakdown</p>
+                    <div class="del-details">
+                        <ul>
+                            <li><code>--top-n</code>, <code>--threshold</code>, <code>--sizes</code>, <code>--cg</code></li>
+                            <li>Tree-view worst-case call chain visualization</li>
+                            <li>Color-coded status (OK / WARN / RISK)</li>
+                            <li>RTOS safety report mode (<code>--rtos-report</code>)</li>
+                            <li>Supports JSON + <code>.su</code> file inputs</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="deliverable-card card-wide" data-status="complete">
+                    <div class="del-header">
+                        <span class="del-num">#5</span>
+                        <span class="del-status">✅ Complete</span>
+                    </div>
+                    <h3>RTOS Evaluation — FreeRTOS Codebase</h3>
+                    <p>Evaluation on embedded RTOS codebase comparing static estimates against expected stack usage</p>
+                    <div class="del-details">
+                        <div class="del-file"><span>📁</span> test/freertos_eval.c <span class="loc">297 lines</span></div>
+                        <div class="del-file"><span>📁</span> test/run_rtos_eval.sh <span class="loc">222 lines</span></div>
+                        <div class="eval-tasks">
+                            <div class="eval-task">
+                                <h4>vSensorTask</h4>
+                                <p>Deep call chain with 512B buffer</p>
+                                <span class="eval-result pass">~750B estimated ✓</span>
+                            </div>
+                            <div class="eval-task">
+                                <h4>vCommsTask</h4>
+                                <p>Indirect call via function pointer</p>
+                                <span class="eval-result pass">Indirect penalty ✓</span>
+                            </div>
+                            <div class="eval-task">
+                                <h4>vControlTask</h4>
+                                <p>Mutual recursion (PID controller)</p>
+                                <span class="eval-result warn">♾ Recursive — Flagged ✓</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Demo & Interactive Analysis Section -->
+    <section class="section section-dark" id="demo">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Interactive</span>
+                <h2>Compile &amp; Analyze Your C Code</h2>
+                <p class="section-subtitle">Upload a <code>.c</code> file or paste your code below — get instant stack analysis results!</p>
+            </div>
+
+            <!-- Input Mode Switcher -->
+            <div class="input-mode-switcher">
+                <button class="input-mode-btn active" id="mode-upload" onclick="switchMode('upload')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    Upload File
+                </button>
+                <button class="input-mode-btn" id="mode-paste" onclick="switchMode('paste')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                    Paste Code
+                </button>
+            </div>
+
+            <!-- Upload Panel -->
+            <div class="upload-panel" id="upload-panel">
+                <div class="dropzone" id="dropzone">
+                    <input type="file" id="file-input" accept=".c,.h" style="display:none">
+                    <div class="dropzone-icon">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                    </div>
+                    <div class="dropzone-text">
+                        <p class="dropzone-primary">Drop your <strong>.c file</strong> here</p>
+                        <p class="dropzone-secondary">or <button class="dropzone-browse" onclick="document.getElementById('file-input').click()">browse files</button></p>
+                        <p class="dropzone-hint">Supports <code>.c</code> and <code>.h</code> files · Max 256 KB</p>
+                    </div>
+                </div>
+                <!-- File status badge shown after upload -->
+                <div class="file-status" id="file-status" style="display:none">
+                    <div class="file-badge">
+                        <span class="file-badge-icon">📄</span>
+                        <span class="file-badge-name" id="file-badge-name"></span>
+                        <span class="file-badge-size" id="file-badge-size"></span>
+                        <button class="file-badge-remove" onclick="clearFile()" title="Remove file">✕</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Paste Panel -->
+            <div class="paste-panel" id="paste-panel" style="display:none">
+                <div class="editor-container">
+                    <div class="editor-header">
+                        <span class="editor-title">✏️ C Code Editor</span>
+                        <button class="btn-icon" onclick="clearEditor()" title="Clear editor">🗑 Clear</button>
+                    </div>
+                    <textarea id="code-editor" placeholder="// Paste or write your C code here...
+#include &lt;stdio.h&gt;
+
+int main() {
+    printf(&quot;Hello, Stack Analyzer!\\n&quot;);
+    return 0;
+}"></textarea>
+                </div>
+            </div>
+
+            <!-- Options row -->
+            <div class="analysis-options">
+                <div class="opt-group">
+                    <label for="opt-level">⚙️ Optimization Level</label>
+                    <select id="opt-level">
+                        <option value="-O0">-O0 (Unoptimized — shows raw stack)</option>
+                        <option value="-O1">-O1 (Mild Inlining)</option>
+                        <option value="-O2 -fno-inline">-O2 -fno-inline (No Inlining)</option>
+                        <option value="-O2">-O2 (Full Optimization)</option>
+                    </select>
+                </div>
+                <div class="action-btns">
+                    <button id="btn-load-sample" class="btn btn-outline" onclick="loadSample()">📋 Load Sample</button>
+                    <button id="btn-analyze" class="btn btn-primary">⚡ Run Stack Analysis</button>
+                </div>
+            </div>
+
+            <!-- Results area -->
+            <div class="demo-tabs" style="margin-top: 36px;">
+                <button class="demo-tab active" data-tab="live">🔴 Live Output</button>
+                <button class="demo-tab" data-tab="eval1">Sample Eval (-O0)</button>
+                <button class="demo-tab" data-tab="eval2">RTOS Safety Report</button>
+                <button class="demo-tab" data-tab="eval3">Usage Guide</button>
+            </div>
+            
+            <div class="terminal" id="terminal">
+                <div class="terminal-header">
+                    <div class="terminal-dots">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                    </div>
+                    <span class="terminal-title" id="terminal-title">stack-analyzer — awaiting input</span>
+                    <button class="terminal-copy-btn" id="copy-btn" onclick="copyOutput()" title="Copy output">📋 Copy</button>
+                </div>
+                <div class="terminal-body">
+                    <pre class="terminal-content" id="terminal-content"><span class="t-dim">  ╔══════════════════════════════════════════════╗
+  ║     ▲  Compile-Time Stack Analyzer  ▲       ║
+  ╚══════════════════════════════════════════════╝
+
+  Upload a .c file or paste code above, then
+  click  ⚡ Run Stack Analysis  to begin.
+
+  Tip: Click "📋 Load Sample" to try a demo
+       with recursion and deep call chains.
+</span></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Metrics Section -->
+    <section class="section" id="metrics">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Metrics</span>
+                <h2>Project Metrics & Results</h2>
+            </div>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-icon">🏗️</div>
+                    <h3>Codebase</h3>
+                    <div class="metric-rows">
+                        <div class="metric-row"><span>StackSizeCollector.cpp</span><span class="metric-val">290 lines</span></div>
+                        <div class="metric-row"><span>StackExtractor.cpp</span><span class="metric-val">120 lines</span></div>
+                        <div class="metric-row"><span>analyzer.py</span><span class="metric-val">513 lines</span></div>
+                        <div class="metric-row"><span>CMakeLists.txt</span><span class="metric-val">77 lines</span></div>
+                        <div class="metric-row"><span>Test harnesses</span><span class="metric-val">409 lines</span></div>
+                        <div class="metric-row total"><span>Total</span><span class="metric-val">~1,400 lines</span></div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">🎯</div>
+                    <h3>Evaluation Results</h3>
+                    <div class="metric-rows">
+                        <div class="metric-row"><span>vSensorTask (within 20% of 750B)</span><span class="metric-val pass">PASS ✅</span></div>
+                        <div class="metric-row"><span>vCommsTask (indirect call penalty)</span><span class="metric-val pass">PASS ✅</span></div>
+                        <div class="metric-row"><span>vControlTask (recursion flagged)</span><span class="metric-val pass">PASS ✅</span></div>
+                        <div class="metric-row"><span>Frame sizes vs -fstack-usage (±16B)</span><span class="metric-val pass">PASS ✅</span></div>
+                        <div class="metric-row total"><span>Overall</span><span class="metric-val pass">4/4 PASS</span></div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">⚡</div>
+                    <h3>Capabilities</h3>
+                    <div class="metric-rows">
+                        <div class="metric-row"><span>Architecture backends</span><span class="metric-val">x86, ARM, AArch64</span></div>
+                        <div class="metric-row"><span>Optimization levels tested</span><span class="metric-val">-O0, -O1, -O2</span></div>
+                        <div class="metric-row"><span>Recursion detection</span><span class="metric-val">Tarjan SCC</span></div>
+                        <div class="metric-row"><span>Input formats</span><span class="metric-val">JSON, .su</span></div>
+                        <div class="metric-row"><span>Output format</span><span class="metric-val">Rich / Plain</span></div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">📋</div>
+                    <h3>RTOS Task Stack Budgets</h3>
+                    <div class="metric-rows">
+                        <div class="metric-row"><span>vSensorTask</span><span class="metric-val">1024 B alloc</span></div>
+                        <div class="metric-row"><span>vCommsTask</span><span class="metric-val">512 B alloc</span></div>
+                        <div class="metric-row"><span>vControlTask</span><span class="metric-val">2048 B alloc</span></div>
+                        <div class="metric-row"><span>Default task stack</span><span class="metric-val">2048 B</span></div>
+                        <div class="metric-row"><span>Indirect call penalty</span><span class="metric-val">256 B</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tech Stack Section -->
+    <section class="section section-dark" id="tech">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Technology</span>
+                <h2>Technology Stack</h2>
+            </div>
+            <div class="tech-grid">
+                <div class="tech-item">
+                    <div class="tech-logo">LLVM</div>
+                    <h3>LLVM 18</h3>
+                    <p>Backend codegen pipeline, MachineFunctionPass, MachineFrameInfo</p>
+                </div>
+                <div class="tech-item">
+                    <div class="tech-logo">C++</div>
+                    <h3>C++17</h3>
+                    <p>stack-extractor & stack-size-collector native tools</p>
+                </div>
+                <div class="tech-item">
+                    <div class="tech-logo">Py</div>
+                    <h3>Python 3</h3>
+                    <p>analyzer.py — graph solver, CLI interface, Rich output</p>
+                </div>
+                <div class="tech-item">
+                    <div class="tech-logo">CM</div>
+                    <h3>CMake</h3>
+                    <p>Cross-platform build system with multi-arch LLVM linking</p>
+                </div>
+                <div class="tech-item">
+                    <div class="tech-logo">Clang</div>
+                    <h3>Clang</h3>
+                    <p>Frontend compiler: C → LLVM IR lowering & -fstack-usage</p>
+                </div>
+                <div class="tech-item">
+                    <div class="tech-logo">RTOS</div>
+                    <h3>FreeRTOS</h3>
+                    <p>Target evaluation platform with simulated task harness</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quick Start Section -->
+    <section class="section" id="quickstart">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag">Getting Started</span>
+                <h2>Quick Start</h2>
+            </div>
+            <div class="quickstart-steps">
+                <div class="qs-step">
+                    <div class="qs-num">1</div>
+                    <h3>Prerequisites</h3>
+                    <div class="code-block"><code>sudo apt install clang llvm cmake python3 python3-pip
+pip install rich</code></div>
+                </div>
+                <div class="qs-step">
+                    <div class="qs-num">2</div>
+                    <h3>Build</h3>
+                    <div class="code-block"><code>cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build</code></div>
+                </div>
+                <div class="qs-step">
+                    <div class="qs-num">3</div>
+                    <h3>Run Evaluation</h3>
+                    <div class="code-block"><code># Basic evaluation
+bash test/run_eval.sh
+
+# RTOS evaluation (Deliverable #5)
+bash test/run_rtos_eval.sh</code></div>
+                </div>
+                <div class="qs-step">
+                    <div class="qs-num">4</div>
+                    <h3>Analyze Your Code</h3>
+                    <div class="code-block"><code># Step 1: Compile to LLVM IR
+clang -O0 -S -emit-llvm your_code.c -o your_code.ll
+
+# Step 2: Extract call graph
+./build/stack-extractor your_code.ll cg.json
+
+# Step 3: Collect frame sizes
+./build/stack-size-collector your_code.ll sizes.json
+
+# Step 4: Analyze
+python3 analyzer.py --sizes sizes.json --cg cg.json \
+  --threshold 1024 --top-n 10</code></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">▲</span>
+                    <span>Compile-Time Stack Usage Analyzer</span>
+                </div>
+                <p>Assignment 39 — Compiler Design EL Project</p>
+                <p class="footer-tech">Built with LLVM · C++17 · Python · CMake</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
